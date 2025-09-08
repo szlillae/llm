@@ -22,12 +22,24 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import CloseIcon from '@mui/icons-material/Close';
 import React, { useState } from 'react';
 
-interface Product {
   id: number;
   name: string;
   description: string;
   price: number;
   stock: number;
+}
+
+interface CartItem {
+  id: number;
+  product_id: number;
+  quantity: number;
+  product: Product;
+}
+
+interface Cart {
+  id: number;
+  items: CartItem[];
+  created_at: string;
 }
 
 type DialogType = 'add' | 'edit' | 'view' | 'delete' | null;
@@ -39,6 +51,7 @@ interface DialogState {
 }
 
 const API_URL = 'http://localhost:8000/products';
+const CART_URL = 'http://localhost:8000/cart';
 
 const ProductList = () => {
   const [dialogState, setDialogState] = useState<DialogState>({
@@ -48,6 +61,27 @@ const ProductList = () => {
   const [formData, setFormData] = useState<Partial<Product>>({});
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [cart, setCart] = useState<Cart | null>(null);
+  // Cart API
+  const fetchCart = async () => {
+    try {
+      const res = await fetch(CART_URL);
+      if (res.ok) {
+        const data = await res.json();
+        setCart(data);
+      }
+    } catch (err) {}
+  };
+
+  const addToCart = async (productId: number) => {
+    await fetch(CART_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ product_id: productId, quantity: 1 })
+    });
+    fetchProducts();
+    fetchCart();
+  };
 
   // API utility functions
   const fetchProducts = async () => {
@@ -91,6 +125,7 @@ const ProductList = () => {
   // Load products on mount
   React.useEffect(() => {
     fetchProducts();
+    fetchCart();
   }, []);
 
   const handleOpenDialog = (type: DialogType, productId?: number) => {
@@ -198,6 +233,14 @@ const ProductList = () => {
                   <Typography variant="body2" color="primary">
                     ${product.price.toFixed(2)}
                   </Typography>
+                  <IconButton
+                    size="small"
+                    color="primary"
+                    onClick={() => addToCart(product.id)}
+                    sx={{ ml: 2 }}
+                  >
+                    <AddIcon />
+                  </IconButton>
                 </Box>
               </Box>
               <CardActions sx={{ mt: 2, gap: 1, px: 0 }}>
@@ -230,6 +273,23 @@ const ProductList = () => {
           </Grid>
         ))}
       </Grid>
+
+      {/* Cart display in bottom left corner */}
+      <Box sx={{ position: 'fixed', bottom: 16, left: 16, width: 300, bgcolor: 'background.paper', boxShadow: 3, borderRadius: 2, p: 2, zIndex: 1000 }}>
+        <Typography variant="h6" sx={{ mb: 1 }}>Cart</Typography>
+        {cart && cart.items.length > 0 ? (
+          <Box>
+            {cart.items.map(item => (
+              <Box key={item.id} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                <Typography variant="body2">{item.product.name} x {item.quantity}</Typography>
+                <Typography variant="body2">${item.product.price.toFixed(2)}</Typography>
+              </Box>
+            ))}
+          </Box>
+        ) : (
+          <Typography variant="body2" color="text.secondary">Cart is empty</Typography>
+        )}
+      </Box>
 
       {/* View Dialog */}
       <Dialog 
