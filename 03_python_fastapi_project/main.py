@@ -8,7 +8,63 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from database import Product, create_tables, get_db
+from database import Product, Cart, CartItem, create_tables, get_db
+
+# Cart models (placed after ProductResponse for correct ordering)
+class CartItemCreate(BaseModel):
+    product_id: int
+    quantity: int = 1
+
+class CartItemResponse(BaseModel):
+    id: int
+    product_id: int
+    quantity: int
+    product: ProductResponse
+
+    class Config:
+        from_attributes = True
+
+class CartResponse(BaseModel):
+    id: int
+    items: list
+    created_at: str
+@app.post("/cart", response_model=CartResponse)
+async def add_to_cart(item: CartItemCreate, db: AsyncSession = Depends(get_db)):
+    # For simplicity, use a single cart (id=1)
+    cart = await db.get(Cart, 1)
+    if not cart:
+        cart = Cart()
+        db.add(cart)
+        await db.commit()
+        await db.refresh(cart)
+
+    product = await db.get(Product, item.product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    if product.stock < item.quantity:
+        raise HTTPException(status_code=400, detail="Not enough stock")
+
+    # Decrease stock
+    product.stock -= item.quantity
+    await db.commit()
+    await db.refresh(product)
+
+    # Add item to cart
+    cart_item = CartItem(cart_id=cart.id, product_id=product.id, quantity=item.quantity)
+    db.add(cart_item)
+    await db.commit()
+    await db.refresh(cart_item)
+
+    # Prepare response
+    items = []
+    for ci in cart.items:
+        items.append({
+            "id": ci.id,
+            "product_id": ci.product_id,
+            "quantity": ci.quantity,
+            "product": ProductResponse.model_validate(ci.product)
+        })
+    return {"id": cart.id, "items": items, "created_at": str(cart.created_at)}
 
 
 class ProductCreate(BaseModel):
@@ -24,6 +80,8 @@ class ProductUpdate(BaseModel):
     stock: int | None = None
 
 
+
+# Response classes
 class ProductResponse(BaseModel):
     id: int
     name: str
@@ -33,6 +91,20 @@ class ProductResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class CartItemResponse(BaseModel):
+    id: int
+    product_id: int
+    quantity: int
+    product: ProductResponse
+
+    class Config:
+        from_attributes = True
+
+class CartResponse(BaseModel):
+    id: int
+    items: list
+    created_at: str
 
 
 @asynccontextmanager
