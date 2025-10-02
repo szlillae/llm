@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import List
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -9,62 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import Product, Cart, CartItem, create_tables, get_db
-
-# Cart models (placed after ProductResponse for correct ordering)
-class CartItemCreate(BaseModel):
-    product_id: int
-    quantity: int = 1
-
-class CartItemResponse(BaseModel):
-    id: int
-    product_id: int
-    quantity: int
-    product: ProductResponse
-
-    class Config:
-        from_attributes = True
-
-class CartResponse(BaseModel):
-    id: int
-    items: list
-    created_at: str
-@app.post("/cart", response_model=CartResponse)
-async def add_to_cart(item: CartItemCreate, db: AsyncSession = Depends(get_db)):
-    # For simplicity, use a single cart (id=1)
-    cart = await db.get(Cart, 1)
-    if not cart:
-        cart = Cart()
-        db.add(cart)
-        await db.commit()
-        await db.refresh(cart)
-
-    product = await db.get(Product, item.product_id)
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    if product.stock < item.quantity:
-        raise HTTPException(status_code=400, detail="Not enough stock")
-
-    # Decrease stock
-    product.stock -= item.quantity
-    await db.commit()
-    await db.refresh(product)
-
-    # Add item to cart
-    cart_item = CartItem(cart_id=cart.id, product_id=product.id, quantity=item.quantity)
-    db.add(cart_item)
-    await db.commit()
-    await db.refresh(cart_item)
-
-    # Prepare response
-    items = []
-    for ci in cart.items:
-        items.append({
-            "id": ci.id,
-            "product_id": ci.product_id,
-            "quantity": ci.quantity,
-            "product": ProductResponse.model_validate(ci.product)
-        })
-    return {"id": cart.id, "items": items, "created_at": str(cart.created_at)}
 
 
 class ProductCreate(BaseModel):
@@ -80,8 +25,7 @@ class ProductUpdate(BaseModel):
     stock: int | None = None
 
 
-
-# Response classes
+# Response Models
 class ProductResponse(BaseModel):
     id: int
     name: str
@@ -92,19 +36,27 @@ class ProductResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class CartItemCreate(BaseModel):
+    product_id: int
+    quantity: int = 1
+
 class CartItemResponse(BaseModel):
     id: int
     product_id: int
     quantity: int
     product: ProductResponse
+    created_at: datetime
 
     class Config:
         from_attributes = True
 
 class CartResponse(BaseModel):
     id: int
-    items: list
-    created_at: str
+    items: list[CartItemResponse]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 
 @asynccontextmanager
@@ -119,10 +71,10 @@ app = FastAPI(title=settings.app_name, lifespan=lifespan)
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["*"],  # Allow all origins for development
     allow_credentials=True,
-    allow_methods=["*"] ,
-    allow_headers=["*"]
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
 )
 
 @app.get("/")
@@ -198,10 +150,184 @@ async def delete_product(id: str, db: AsyncSession = Depends(get_db)):
     if not db_product:
         raise HTTPException(status_code=404, detail="Desired product not found")
 
-
     await db.delete(db_product)
     await db.commit()
 
+# Cart endpoints
+@app.post("/cart", response_model=CartResponse)
+async def create_cart(db: AsyncSession = Depends(get_db)):
+    cart = Cart()
+    db.add(cart)
+    await db.commit()
+    await db.refresh(cart)
+    
+    # Return properly formatted response
+    return CartResponse(
+        id=cart.id,
+        items=[],  # Empty list for new cart
+        created_at=cart.created_at
+    )
+
+@app.get("/cart/{cart_id}", response_model=CartResponse)
+async def get_cart(cart_id: int, db: AsyncSession = Depends(get_db)):
+    cart = await db.get(Cart, cart_id)
+    if not cart:
+        raise HTTPException(status_code=404, detail="Cart not found")
+    
+    # Fetch cart items explicitly to avoid lazy loading issues
+    cart_items_result = await db.execute(
+        select(CartItem).filter(CartItem.cart_id == cart_id)
+    )
+    cart_items = cart_items_result.scalars().all()
+    
+    # Format cart items properly
+    formatted_items = []
+    for item in cart_items:
+        # Fetch the product explicitly to ensure it's loaded
+        item_product = await db.get(Product, item.product_id)
+        if item_product:
+            formatted_items.append(CartItemResponse(
+                id=item.id,
+                product_id=item.product_id,
+                quantity=item.quantity,
+                product=ProductResponse.model_validate(item_product),
+                created_at=item.created_at
+            ))
+    
+    return CartResponse(
+        id=cart.id,
+        items=formatted_items,
+        created_at=cart.created_at
+    )
+
+@app.post("/cart/{cart_id}/items", response_model=CartResponse)
+async def add_to_cart(
+    cart_id: int,
+    item: CartItemCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    # Check if cart exists
+    cart = await db.get(Cart, cart_id)
+    if not cart:
+        raise HTTPException(status_code=404, detail="Cart not found")
+
+    # Check if product exists and has enough stock
+    product = await db.get(Product, item.product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    if product.stock < item.quantity:
+        raise HTTPException(status_code=400, detail="Not enough stock")
+
+    # Check if item already exists in cart
+    result = await db.execute(
+        select(CartItem).filter(
+            CartItem.cart_id == cart_id,
+            CartItem.product_id == item.product_id
+        )
+    )
+    existing_item = result.scalar_one_or_none()
+
+    if existing_item:
+        # Update quantity of existing item
+        if product.stock < (existing_item.quantity + item.quantity):
+            raise HTTPException(status_code=400, detail="Not enough stock")
+        existing_item.quantity += item.quantity
+        await db.commit()
+        await db.refresh(existing_item)
+    else:
+        # Create new cart item
+        cart_item = CartItem(
+            cart_id=cart_id,
+            product_id=item.product_id,
+            quantity=item.quantity
+        )
+        db.add(cart_item)
+        await db.commit()
+        await db.refresh(cart_item)
+
+    # Decrease product stock - refresh product first to ensure it's attached to session
+    await db.refresh(product)
+    product.stock -= item.quantity
+    await db.commit()
+    await db.refresh(product)
+    await db.refresh(cart)
+
+    # Fetch cart items explicitly to avoid lazy loading issues
+    cart_items_result = await db.execute(
+        select(CartItem).filter(CartItem.cart_id == cart_id)
+    )
+    cart_items = cart_items_result.scalars().all()
+    
+    # Format cart items properly
+    formatted_items = []
+    for cart_item_obj in cart_items:
+        # Fetch the product explicitly to ensure it's loaded
+        item_product = await db.get(Product, cart_item_obj.product_id)
+        if item_product:  # Check if product exists
+            formatted_items.append(CartItemResponse(
+                id=cart_item_obj.id,
+                product_id=cart_item_obj.product_id,
+                quantity=cart_item_obj.quantity,
+                product=ProductResponse.model_validate(item_product),
+                created_at=cart_item_obj.created_at
+            ))
+    
+    return CartResponse(
+        id=cart.id,
+        items=formatted_items,
+        created_at=cart.created_at
+    )
+
+@app.delete("/cart/{cart_id}/items/{item_id}", response_model=CartResponse)
+async def remove_from_cart(
+    cart_id: int,
+    item_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    # Check if cart exists
+    cart = await db.get(Cart, cart_id)
+    if not cart:
+        raise HTTPException(status_code=404, detail="Cart not found")
+
+    # Check if item exists
+    cart_item = await db.get(CartItem, item_id)
+    if not cart_item or cart_item.cart_id != cart_id:
+        raise HTTPException(status_code=404, detail="Cart item not found")
+
+    # Restore product stock
+    product = await db.get(Product, cart_item.product_id)
+    product.stock += cart_item.quantity
+    
+    # Remove item from cart
+    await db.delete(cart_item)
+    await db.commit()
+    await db.refresh(cart)
+    
+    # Fetch cart items explicitly to avoid lazy loading issues
+    cart_items_result = await db.execute(
+        select(CartItem).filter(CartItem.cart_id == cart_id)
+    )
+    remaining_cart_items = cart_items_result.scalars().all()
+    
+    # Format cart items properly
+    formatted_items = []
+    for cart_item_obj in remaining_cart_items:
+        # Fetch the product explicitly to ensure it's loaded
+        item_product = await db.get(Product, cart_item_obj.product_id)
+        if item_product:
+            formatted_items.append(CartItemResponse(
+                id=cart_item_obj.id,
+                product_id=cart_item_obj.product_id,
+                quantity=cart_item_obj.quantity,
+                product=ProductResponse.model_validate(item_product),
+                created_at=cart_item_obj.created_at
+            ))
+    
+    return CartResponse(
+        id=cart.id,
+        items=formatted_items,
+        created_at=cart.created_at
+    )
 
 if __name__ == "__main__":
     import uvicorn

@@ -14,21 +14,19 @@ AsyncSessionLocal = sessionmaker(
 
 Base = declarative_base()
 
+from sqlalchemy import ForeignKey
+from sqlalchemy.orm import relationship
 
 class Product(Base):
     __tablename__ = "products"
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
-    price = Column(Float, index=True)
+    price = Column(Float, index=True)   
     description = Column(String, nullable=True)
     stock = Column(Integer)
     created_at = Column(DateTime, default=datetime.utcnow)
-
-
-# Cart and CartItem models
-from sqlalchemy import ForeignKey
-from sqlalchemy.orm import relationship
+    cart_items = relationship("CartItem", back_populates="product")
 
 class Cart(Base):
     __tablename__ = "carts"
@@ -44,9 +42,10 @@ class CartItem(Base):
     cart_id = Column(Integer, ForeignKey("carts.id"))
     product_id = Column(Integer, ForeignKey("products.id"))
     quantity = Column(Integer, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
     cart = relationship("Cart", back_populates="items")
-    product = relationship("Product")
-
+    product = relationship("Product", back_populates="cart_items")
 
 async def get_db():
     async with AsyncSessionLocal() as session:

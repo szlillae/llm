@@ -1,8 +1,7 @@
 import { 
   Box, 
   Button, 
-  Card, 
-  CardActions, 
+  Card,
   Dialog,
   DialogActions,
   DialogContent,
@@ -13,7 +12,6 @@ import {
   TextField, 
   Typography 
 } from '@mui/material';
-import type { GridProps } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import SearchIcon from '@mui/icons-material/Search';
 import EyeIcon from '@mui/icons-material/Visibility';
@@ -22,6 +20,7 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import CloseIcon from '@mui/icons-material/Close';
 import React, { useState } from 'react';
 
+interface Product {
   id: number;
   name: string;
   description: string;
@@ -34,6 +33,7 @@ interface CartItem {
   product_id: number;
   quantity: number;
   product: Product;
+  created_at: string;
 }
 
 interface Cart {
@@ -50,8 +50,9 @@ interface DialogState {
   productId?: number;
 }
 
-const API_URL = 'http://localhost:8000/products';
-const CART_URL = 'http://localhost:8000/cart';
+const API_URL = 'http://localhost:8000';
+const PRODUCTS_URL = `${API_URL}/products`;
+const CART_URL = `${API_URL}/cart`;
 
 const ProductList = () => {
   const [dialogState, setDialogState] = useState<DialogState>({
@@ -61,44 +62,91 @@ const ProductList = () => {
   const [formData, setFormData] = useState<Partial<Product>>({});
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [cart, setCart] = useState<Cart | null>(null);
-  // Cart API
-  const fetchCart = async () => {
-    try {
-      const res = await fetch(CART_URL);
-      if (res.ok) {
-        const data = await res.json();
-        setCart(data);
-      }
-    } catch (err) {}
-  };
+  const [cartId, setCartId] = useState<number | null>(null);
 
-  const addToCart = async (productId: number) => {
-    await fetch(CART_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ product_id: productId, quantity: 1 })
-    });
-    fetchProducts();
-    fetchCart();
-  };
+  // Filter products based on search query
+  const filteredProducts = products.filter(product =>
+    product.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    product.description.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
   // API utility functions
   const fetchProducts = async () => {
     setLoading(true);
     try {
-      const res = await fetch(API_URL);
+      const res = await fetch(PRODUCTS_URL);
       const data = await res.json();
       setProducts(data);
     } catch (err) {
-      // handle error (optional)
+      console.error('Error fetching products:', err);
     } finally {
       setLoading(false);
     }
   };
 
+  const addToCart = async (productId: number) => {
+    let currentCartId = cartId;
+    
+    // Create cart only when first item is added
+    if (!currentCartId) {
+      try {
+        const res = await fetch(CART_URL, {
+          method: 'POST',
+        });
+        const cartData = await res.json();
+        currentCartId = cartData.id;
+        setCartId(cartData.id);
+        setCart(cartData);
+        // Save cart ID to localStorage for persistence
+        localStorage.setItem('cartId', cartData.id.toString());
+      } catch (err) {
+        console.error('Error creating cart:', err);
+        return;
+      }
+    }
+    
+    try {
+      const res = await fetch(`${CART_URL}/${currentCartId}/items`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: productId, quantity: 1 })
+      });
+      const data = await res.json();
+      setCart(data);
+      fetchProducts(); // Refresh products to update stock
+    } catch (err) {
+      console.error('Error adding to cart:', err);
+    }
+  };
+
+  const removeFromCart = async (itemId: number) => {
+    if (!cartId) return;
+
+    try {
+      const res = await fetch(`${CART_URL}/${cartId}/items/${itemId}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json();
+      setCart(data);
+      
+      // If cart is empty, clear it from localStorage
+      if (data.items.length === 0) {
+        localStorage.removeItem('cartId');
+        setCartId(null);
+        setCart(null);
+      }
+      
+      fetchProducts(); // Refresh products to update stock
+    } catch (err) {
+      console.error('Error removing from cart:', err);
+    }
+  };
+
   const addProduct = async (product: Omit<Product, 'id'>) => {
-    await fetch(API_URL, {
+    await fetch(PRODUCTS_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(product)
@@ -107,7 +155,7 @@ const ProductList = () => {
   };
 
   const editProduct = async (id: number, product: Omit<Product, 'id'>) => {
-    await fetch(`${API_URL}/${id}`, {
+    await fetch(`${PRODUCTS_URL}/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(product)
@@ -116,16 +164,36 @@ const ProductList = () => {
   };
 
   const deleteProduct = async (id: number) => {
-    await fetch(`${API_URL}/${id}`, {
+    await fetch(`${PRODUCTS_URL}/${id}`, {
       method: 'DELETE'
     });
     fetchProducts();
   };
 
-  // Load products on mount
+  // Load products and restore cart on mount
   React.useEffect(() => {
     fetchProducts();
-    fetchCart();
+    
+    // Try to restore cart from localStorage
+    const savedCartId = localStorage.getItem('cartId');
+    if (savedCartId) {
+      const parsedCartId = parseInt(savedCartId, 10);
+      if (!isNaN(parsedCartId)) {
+        setCartId(parsedCartId);
+        // Fetch the existing cart
+        fetch(`${CART_URL}/${parsedCartId}`)
+          .then(res => res.json())
+          .then(cartData => {
+            setCart(cartData);
+          })
+          .catch(err => {
+            console.error('Error fetching saved cart:', err);
+            // If cart doesn't exist anymore, remove from localStorage
+            localStorage.removeItem('cartId');
+            setCartId(null);
+          });
+      }
+    }
   }, []);
 
   const handleOpenDialog = (type: DialogType, productId?: number) => {
@@ -145,7 +213,7 @@ const ProductList = () => {
     const product = products.find(p => p.id === id);
     if (product) {
       setFormData(product);
-      handleOpenDialog('edit', id);
+      setDialogState({ open: true, type: 'edit', productId: id });
     }
   };
 
@@ -188,294 +256,1017 @@ const ProductList = () => {
   };
 
   return (
-    <Box>
-      <Box sx={{ mb: 3, display: 'flex', alignItems: 'center', gap: 2 }}>
-        <Box sx={{ flex: 1, position: 'relative' }}>
-          <TextField
-            fullWidth
-            placeholder="Search products..."
-            variant="outlined"
-            InputProps={{
-              startAdornment: (
-                <InputAdornment position="start">
-                  <SearchIcon sx={{ color: 'text.primary' }} />
-                </InputAdornment>
-              ),
-            }}
-            sx={{ backgroundColor: 'background.paper' }}
-          />
-        </Box>
-        <Button
-          variant="contained"
-          startIcon={<AddIcon />}
-          onClick={() => handleOpenDialog('add')}
-          sx={{ height: '31.5px' }}
+    <Box sx={{ 
+      minHeight: '100vh', 
+      width: '100%',
+      background: '#fff',
+      py: 4
+    }}>
+      <Box sx={{ maxWidth: '1120px', mx: 'auto', px: 3 }}>
+        {/* Header */}
+        <Typography 
+          variant="h4" 
+          sx={{ 
+            fontWeight: 500, 
+            mb: 4, 
+            color: '#030213',
+            fontSize: '15px',
+            lineHeight: 1.5
+          }}
         >
-          Add Product
-        </Button>
-      </Box>
+          Product Management
+        </Typography>
 
-      <Grid container spacing={2}>
-        {products.map((product) => (
-          <Grid key={product.id} {...{ item: true, xs: 12, sm: 6, md: 4 } as GridProps}>
-            <Card>
-              <Box>
-                <Typography variant="h4" sx={{ mb: 1 }}>
-                  {product.name}
-                </Typography>
-                <Typography variant="body1" sx={{ mb: 2 }}>
-                  {product.description}
-                </Typography>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Typography variant="body1">
-                    Stock: {product.stock}
-                  </Typography>
-                  <Typography variant="body2" color="primary">
-                    ${product.price.toFixed(2)}
-                  </Typography>
-                  <IconButton
-                    size="small"
-                    color="primary"
-                    onClick={() => addToCart(product.id)}
-                    sx={{ ml: 2 }}
-                  >
-                    <AddIcon />
-                  </IconButton>
-                </Box>
-              </Box>
-              <CardActions sx={{ mt: 2, gap: 1, px: 0 }}>
-                <Button
-                  variant="outlined"
-                  size="small"
-                  startIcon={<EyeIcon />}
-                  onClick={() => handleView(product.id)}
-                >
-                  View
-                </Button>
-                <Button
-                  variant="outlined"
-                  size="small"
-                  startIcon={<EditIcon />}
-                  onClick={() => handleEdit(product.id)}
-                >
-                  Edit
-                </Button>
-                <IconButton
-                  size="small"
-                  color="error"
-                  onClick={() => handleDelete(product.id)}
-                  sx={{ ml: 'auto' }}
-                >
-                  <DeleteIcon />
-                </IconButton>
-              </CardActions>
-            </Card>
-          </Grid>
-        ))}
-      </Grid>
-
-      {/* Cart display in bottom left corner */}
-      <Box sx={{ position: 'fixed', bottom: 16, left: 16, width: 300, bgcolor: 'background.paper', boxShadow: 3, borderRadius: 2, p: 2, zIndex: 1000 }}>
-        <Typography variant="h6" sx={{ mb: 1 }}>Cart</Typography>
-        {cart && cart.items.length > 0 ? (
-          <Box>
-            {cart.items.map(item => (
-              <Box key={item.id} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
-                <Typography variant="body2">{item.product.name} x {item.quantity}</Typography>
-                <Typography variant="body2">${item.product.price.toFixed(2)}</Typography>
-              </Box>
-            ))}
+        {/* Search and Add */}
+        <Box sx={{ mb: 4, display: 'flex', alignItems: 'center', gap: 2 }}>
+          <Box sx={{ flex: 1 }}>
+            <TextField
+              fullWidth
+              placeholder="Search products..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              variant="outlined"
+              size="small"
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <SearchIcon sx={{ color: '#717182', width: 18, height: 18 }} />
+                  </InputAdornment>
+                ),
+                sx: {
+                  background: '#F3F3F5',
+                  borderRadius: '8px',
+                  fontSize: '13px',
+                  '& .MuiOutlinedInput-root': {
+                    height: '40px'
+                  },
+                  '& .MuiOutlinedInput-notchedOutline': {
+                    border: 'none'
+                  },
+                  '&:hover .MuiOutlinedInput-notchedOutline': {
+                    border: 'none'
+                  },
+                  '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                    border: '1px solid #030213'
+                  }
+                }
+              }}
+            />
           </Box>
-        ) : (
-          <Typography variant="body2" color="text.secondary">Cart is empty</Typography>
-        )}
+          <Button
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={() => handleOpenDialog('add')}
+            sx={{
+              height: '40px',
+              px: 3,
+              borderRadius: '8px',
+              background: '#030213',
+              color: '#fff',
+              fontSize: '13px',
+              textTransform: 'none',
+              fontWeight: 500,
+              '&:hover': {
+                background: '#151524'
+              }
+            }}
+          >
+            Add Product
+          </Button>
+        </Box>
+
+        {/* Products Grid */}
+        <Grid container spacing={3}>
+          {loading ? (
+            <Grid item xs={12}>
+              <Box sx={{ 
+                display: 'flex', 
+                justifyContent: 'center', 
+                alignItems: 'center',
+                py: 8 
+              }}>
+                <Typography sx={{ 
+                  color: '#717182',
+                  fontSize: '14px'
+                }}>
+                  Loading products...
+                </Typography>
+              </Box>
+            </Grid>
+          ) : filteredProducts.length === 0 ? (
+            <Grid item xs={12}>
+              <Box sx={{ 
+                display: 'flex', 
+                justifyContent: 'center', 
+                alignItems: 'center',
+                py: 8 
+              }}>
+                <Typography sx={{ 
+                  color: '#717182',
+                  fontSize: '14px'
+                }}>
+                  No products found
+                </Typography>
+              </Box>
+            </Grid>
+          ) : (
+            filteredProducts.map((product) => (
+              <Grid item xs={12} sm={12} md={6} key={product.id}>
+                <Card sx={{ 
+                  height: '100%',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  borderRadius: '16px',
+                  border: '1px solid #E4E4E7',
+                  boxShadow: 'none'
+                }}>
+                  <Box sx={{ p: 4 }}>
+                    <Typography 
+                      variant="h4" 
+                      sx={{ 
+                        fontSize: '20px',
+                        fontWeight: 500,
+                        color: '#18181B',
+                        mb: 1
+                      }}
+                    >
+                      {product.name}
+                    </Typography>
+                    <Typography 
+                      sx={{ 
+                        fontSize: '14px',
+                        color: '#71717A',
+                        mb: 3
+                      }}
+                    >
+                      {product.description}
+                    </Typography>
+                    <Box 
+                      sx={{ 
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        mb: 3
+                      }}
+                    >
+                      <Typography
+                        sx={{
+                          fontSize: '20px',
+                          fontWeight: 500,
+                          color: '#18181B'
+                        }}
+                      >
+                        ${product.price.toFixed(2)}
+                      </Typography>
+                      <Typography
+                        sx={{
+                          fontSize: '14px',
+                          color: '#71717A'
+                        }}
+                      >
+                        Stock: {product.stock}
+                      </Typography>
+                      <IconButton
+                        color="primary"
+                        onClick={() => addToCart(product.id)}
+                        disabled={product.stock <= 0}
+                        size="small"
+                      >
+                        <AddIcon />
+                      </IconButton>
+                    </Box>
+                  </Box>
+                  <Box 
+                    sx={{ 
+                      mt: 'auto',
+                      px: 4,
+                      pb: 4,
+                      display: 'flex',
+                      gap: 2
+                    }}
+                  >
+                    <Button
+                      variant="outlined"
+                      startIcon={<EyeIcon />}
+                      onClick={() => handleView(product.id)}
+                      sx={{
+                        flex: 1,
+                        height: '40px',
+                        borderRadius: '8px',
+                        border: '1px solid #E4E4E7',
+                        color: '#18181B',
+                        fontSize: '14px',
+                        textTransform: 'none',
+                        fontWeight: 500,
+                        '&:hover': {
+                          backgroundColor: '#F4F4F5',
+                          borderColor: '#E4E4E7'
+                        }
+                      }}
+                    >
+                      View
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      startIcon={<EditIcon />}
+                      onClick={() => handleEdit(product.id)}
+                      sx={{
+                        flex: 1,
+                        height: '40px',
+                        borderRadius: '8px',
+                        border: '1px solid #E4E4E7',
+                        color: '#18181B',
+                        fontSize: '14px',
+                        textTransform: 'none',
+                        fontWeight: 500,
+                        '&:hover': {
+                          backgroundColor: '#F4F4F5',
+                          borderColor: '#E4E4E7'
+                        }
+                      }}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      variant="contained"
+                      onClick={() => handleDelete(product.id)}
+                      sx={{
+                        minWidth: '40px',
+                        width: '40px',
+                        height: '40px',
+                        p: 0,
+                        borderRadius: '8px',
+                        backgroundColor: '#EF4444',
+                        '&:hover': {
+                          backgroundColor: '#DC2626'
+                        }
+                      }}
+                    >
+                      <DeleteIcon />
+                    </Button>
+                  </Box>
+                </Card>
+              </Grid>
+            ))
+          )}
+        </Grid>
       </Box>
 
+      {/* Dialogs */}
       {/* View Dialog */}
-      <Dialog 
-        open={dialogState.open && dialogState.type === 'view'} 
+      <Dialog
+        open={dialogState.open && dialogState.type === 'view'}
         onClose={handleCloseDialog}
-        maxWidth="sm"
-        fullWidth
+        PaperProps={{
+          sx: {
+            width: '444px',
+            minHeight: '286px',
+            borderRadius: '8.75px',
+            boxShadow: '0px 10px 15px rgba(0, 0, 0, 0.1), 0px 4px 6px rgba(0, 0, 0, 0.1)',
+            border: '1px solid rgba(0, 0, 0, 0.1)',
+            p: 0,
+            display: 'flex',
+            flexDirection: 'column'
+          }
+        }}
       >
-        <DialogTitle>
+        <DialogTitle sx={{ 
+          p: '21px 22px',
+          '& .MuiTypography-root': {
+            fontSize: '16px',
+            fontWeight: 600,
+            color: '#000000',
+            lineHeight: '0.984375em',
+          }
+        }}>
           Product Details
           <IconButton
+            aria-label="close"
             onClick={handleCloseDialog}
-            sx={{ position: 'absolute', right: 8, top: 8 }}
+            sx={{
+              position: 'absolute',
+              right: 15,
+              top: 15,
+              width: '24px',
+              height: '24px',
+              color: '#000000',
+              p: 0
+            }}
           >
-            <CloseIcon />
+            <CloseIcon sx={{ width: '12px', height: '12px' }} />
           </IconButton>
         </DialogTitle>
-        <DialogContent>
+        <DialogContent sx={{ px: '22px', py: 0, overflow: 'visible', flex: 1 }}>
           {dialogState.productId && products.find(p => p.id === dialogState.productId) && (
-            <Box sx={{ pt: 2 }}>
-              <Typography variant="h6" sx={{ mb: 2 }}>
+            <Box sx={{ pt: 0 }}>
+              <Typography sx={{ 
+                fontSize: '16px',
+                fontWeight: 500,
+                color: '#000000',
+                lineHeight: '1.4765625em',
+                mb: '9px'
+              }}>
                 {products.find(p => p.id === dialogState.productId)?.name}
               </Typography>
-              <Typography variant="body1" sx={{ mb: 2 }}>
+              <Typography sx={{ 
+                fontSize: '16px',
+                fontWeight: 400,
+                color: '#717182',
+                lineHeight: '1.5em',
+                mb: '11px'
+              }}>
                 {products.find(p => p.id === dialogState.productId)?.description}
               </Typography>
-              <Typography variant="body1" sx={{ mb: 1 }}>
-                Price: ${products.find(p => p.id === dialogState.productId)?.price.toFixed(2)}
-              </Typography>
-              <Typography variant="body1">
-                Stock: {products.find(p => p.id === dialogState.productId)?.stock}
-              </Typography>
+              <Box sx={{ 
+                height: '1px',
+                background: 'rgba(0, 0, 0, 0.1)',
+                mb: '14px',
+                mx: 0
+              }} />
+              <Box sx={{ display: 'flex', gap: '156px', mb: '14px' }}>
+                <Box>
+                  <Typography sx={{ 
+                    fontSize: '12px',
+                    fontWeight: 400,
+                    color: '#717182',
+                    lineHeight: '1.4583333333333333em',
+                    mb: '3px'
+                  }}>
+                    Price:
+                  </Typography>
+                  <Typography sx={{ 
+                    fontSize: '12px',
+                    fontWeight: 500,
+                    color: '#030213',
+                    lineHeight: '1.4583333333333333em'
+                  }}>
+                    $ {products.find(p => p.id === dialogState.productId)?.price.toFixed(2)}
+                  </Typography>
+                </Box>
+                <Box>
+                  <Typography sx={{ 
+                    fontSize: '12px',
+                    fontWeight: 400,
+                    color: '#717182',
+                    lineHeight: '1.4583333333333333em',
+                    mb: '3px'
+                  }}>
+                    Stock:
+                  </Typography>
+                  <Typography sx={{ 
+                    fontSize: '12px',
+                    fontWeight: 400,
+                    color: '#000000',
+                    lineHeight: '1.4583333333333333em'
+                  }}>
+                    {products.find(p => p.id === dialogState.productId)?.stock} units
+                  </Typography>
+                </Box>
+              </Box>
+              <Box>
+                <Typography sx={{ 
+                  fontSize: '12px',
+                  fontWeight: 400,
+                  color: '#717182',
+                  lineHeight: '1.4583333333333333em',
+                  mb: '4px'
+                }}>
+                  Product ID:
+                </Typography>
+                <Typography sx={{ 
+                  fontSize: '11px',
+                  fontWeight: 400,
+                  color: '#000000',
+                  lineHeight: '1.2727272727272727em'
+                }}>
+                  {products.find(p => p.id === dialogState.productId)?.id}
+                </Typography>
+              </Box>
             </Box>
           )}
         </DialogContent>
-        <DialogActions>
-          <Button onClick={handleCloseDialog}>Close</Button>
+      </Dialog>
+
+
+
+      {/* Add Dialog */}
+      <Dialog
+        open={dialogState.open && dialogState.type === 'add'}
+        onClose={handleCloseDialog}
+        PaperProps={{
+          sx: {
+            width: '450px',
+            minHeight: '400px',
+            borderRadius: '8.75px',
+            boxShadow: '0px 10px 15px rgba(0, 0, 0, 0.1), 0px 4px 6px rgba(0, 0, 0, 0.1)',
+            border: '1px solid rgba(0, 0, 0, 0.1)',
+            p: 0,
+            display: 'flex',
+            flexDirection: 'column'
+          }
+        }}
+      >
+        <DialogTitle sx={{ 
+          p: '24px 28px',
+          '& .MuiTypography-root': {
+            fontSize: '18px',
+            fontWeight: 600,
+            color: '#000000',
+            lineHeight: '0.984375em',
+          }
+        }}>
+          Add New Product
+          <IconButton
+            aria-label="close"
+            onClick={handleCloseDialog}
+            sx={{
+              position: 'absolute',
+              right: 15,
+              top: 15,
+              width: '24px',
+              height: '24px',
+              color: '#000000',
+              p: 0
+            }}
+          >
+            <CloseIcon sx={{ width: '14px', height: '14px' }} />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent sx={{ px: '28px', py: 0, overflow: 'visible', flex: 1 }}>
+          <Box component="form" onSubmit={(e) => { e.preventDefault(); handleSave(); }}>
+            <Box sx={{ mb: 3 }}>
+              <Typography sx={{
+                fontSize: '14px',
+                fontWeight: 500,
+                color: '#000000',
+                mb: '18px',
+                lineHeight: '1.0208333333333333em'
+              }}>
+                Product Name
+              </Typography>
+              <TextField
+                name="name"
+                value={formData.name || ''}
+                onChange={handleInputChange}
+                placeholder="Enter product name"
+                fullWidth
+                InputProps={{
+                  sx: {
+                    backgroundColor: '#F3F3F5',
+                    borderRadius: '6.75px',
+                    height: '36px',
+                    border: 'none',
+                    fontSize: '14px',
+                    fontWeight: 400,
+                    color: '#000000',
+                    padding: '8px 11px',
+                    '& .MuiOutlinedInput-notchedOutline': {
+                      border: 'none'
+                    }
+                  }
+                }}
+              />
+            </Box>
+
+            <Box sx={{ mb: 3 }}>
+              <Typography sx={{
+                fontSize: '14px',
+                fontWeight: 500,
+                color: '#000000',
+                mb: '18px',
+                lineHeight: '1.0208333333333333em'
+              }}>
+                Description
+              </Typography>
+              <TextField
+                name="description"
+                value={formData.description || ''}
+                onChange={handleInputChange}
+                placeholder="Enter product description"
+                multiline
+                rows={3}
+                fullWidth
+                InputProps={{
+                  sx: {
+                    backgroundColor: '#F3F3F5',
+                    borderRadius: '6.75px',
+                    border: 'none',
+                    fontSize: '14px',
+                    fontWeight: 400,
+                    color: '#000000',
+                    padding: '9px 13px',
+                    lineHeight: '1.4',
+                    '& .MuiOutlinedInput-notchedOutline': {
+                      border: 'none'
+                    }
+                  }
+                }}
+              />
+            </Box>
+
+            <Box sx={{ display: 'flex', gap: '14px' }}>
+              <Box sx={{ flex: 1 }}>
+                <Typography sx={{
+                  fontSize: '14px',
+                  fontWeight: 500,
+                  color: '#000000',
+                  mb: '18px',
+                  lineHeight: '1.0208333333333333em'
+                }}>
+                  Price ($)
+                </Typography>
+                <TextField
+                  name="price"
+                  type="number"
+                  value={formData.price || ''}
+                  onChange={handleInputChange}
+                  placeholder="0.00"
+                  fullWidth
+                  InputProps={{
+                    sx: {
+                      backgroundColor: '#F3F3F5',
+                      borderRadius: '6.75px',
+                      height: '36px',
+                      border: 'none',
+                      fontSize: '14px',
+                      fontWeight: 400,
+                      color: '#000000',
+                      padding: '8px 14px',
+                      '& .MuiOutlinedInput-notchedOutline': {
+                        border: 'none'
+                      }
+                    }
+                  }}
+                />
+              </Box>
+
+              <Box sx={{ flex: 1 }}>
+                <Typography sx={{
+                  fontSize: '14px',
+                  fontWeight: 500,
+                  color: '#000000',
+                  mb: '18px',
+                  lineHeight: '1.0208333333333333em'
+                }}>
+                  Stock
+                </Typography>
+                <TextField
+                  name="stock"
+                  type="number"
+                  value={formData.stock || ''}
+                  onChange={handleInputChange}
+                  placeholder="0"
+                  fullWidth
+                  InputProps={{
+                    sx: {
+                      backgroundColor: '#F3F3F5',
+                      borderRadius: '6.75px',
+                      height: '36px',
+                      border: 'none',
+                      fontSize: '14px',
+                      fontWeight: 400,
+                      color: '#000000',
+                      padding: '8px 11px',
+                      '& .MuiOutlinedInput-notchedOutline': {
+                        border: 'none'
+                      }
+                    }
+                  }}
+                />
+              </Box>
+            </Box>
+          </Box>
+        </DialogContent>
+
+        <DialogActions sx={{ p: '28px', gap: '12px' }}>
+          <Button 
+            onClick={handleCloseDialog}
+            sx={{
+              height: '32px',
+              minWidth: '68px',
+              borderRadius: '6.75px',
+              border: '1px solid rgba(0, 0, 0, 0.1)',
+              color: '#000000',
+              fontSize: '14px',
+              fontWeight: 500,
+              lineHeight: '1.4583333333333333em',
+              textTransform: 'none',
+              padding: '7px 14px',
+              '&:hover': {
+                borderColor: 'rgba(0, 0, 0, 0.1)',
+                backgroundColor: 'rgba(0, 0, 0, 0.05)'
+              }
+            }}
+          >
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleSave}
+            variant="contained"
+            sx={{
+              height: '32px',
+              minWidth: '113px',
+              borderRadius: '6.75px',
+              backgroundColor: '#030213',
+              color: '#FFFFFF',
+              fontSize: '14px',
+              fontWeight: 500,
+              lineHeight: '1.4583333333333333em',
+              textTransform: 'none',
+              padding: '7px 11px',
+              '&:hover': {
+                backgroundColor: '#1A1A1A'
+              }
+            }}
+          >
+            Add Product
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Delete Dialog */}
+      <Dialog
+        open={dialogState.open && dialogState.type === 'delete'}
+        onClose={handleCloseDialog}
+        PaperProps={{
+          sx: {
+            width: '444px',
+            minHeight: '156px',
+            borderRadius: '8.75px',
+            boxShadow: '0px 10px 15px rgba(0, 0, 0, 0.1), 0px 4px 6px rgba(0, 0, 0, 0.1)',
+            border: '1px solid rgba(0, 0, 0, 0.1)',
+            p: 0,
+            display: 'flex',
+            flexDirection: 'column'
+          }
+        }}
+      >
+        <DialogTitle sx={{ 
+          p: '21px 22px',
+          '& .MuiTypography-root': {
+            fontSize: '16px',
+            fontWeight: 600,
+            color: '#000000',
+            lineHeight: '1.53125em',
+          }
+        }}>
+          Delete Product
+        </DialogTitle>
+        <DialogContent sx={{ px: '22px', py: 0, overflow: 'visible', flex: 1 }}>
+          <Typography sx={{ 
+            fontSize: '12px',
+            fontWeight: 400,
+            color: '#717182',
+            lineHeight: '1.4583333333333333em'
+          }}>
+            Are you sure you want to delete "{products.find(p => p.id === dialogState.productId)?.name}"? This action cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ p: '22px', gap: '8px' }}>
+          <Button 
+            onClick={handleCloseDialog}
+            sx={{
+              height: '32px',
+              minWidth: '68px',
+              borderRadius: '6.75px',
+              border: '1px solid rgba(0, 0, 0, 0.1)',
+              color: '#000000',
+              fontSize: '12px',
+              fontWeight: 500,
+              lineHeight: '1.4583333333333333em',
+              textTransform: 'none',
+              padding: '7px 14px',
+              '&:hover': {
+                borderColor: 'rgba(0, 0, 0, 0.1)',
+                backgroundColor: 'rgba(0, 0, 0, 0.05)'
+              }
+            }}
+          >
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleConfirmDelete}
+            variant="contained"
+            sx={{
+              height: '32px',
+              minWidth: '109px',
+              borderRadius: '6.75px',
+              backgroundColor: '#D4183D',
+              color: '#FFFFFF',
+              fontSize: '12px',
+              fontWeight: 500,
+              lineHeight: '1.4583333333333333em',
+              textTransform: 'none',
+              padding: '7px 12px',
+              '&:hover': {
+                backgroundColor: '#BD1535'
+              }
+            }}
+          >
+            Delete Product
+          </Button>
         </DialogActions>
       </Dialog>
 
       {/* Edit Dialog */}
       <Dialog 
-        open={dialogState.open && dialogState.type === 'edit'} 
+        open={dialogState.open && dialogState.type === 'edit'}
         onClose={handleCloseDialog}
-        maxWidth="sm"
-        fullWidth
+        PaperProps={{
+          sx: {
+            width: '450px',
+            minHeight: '400px',
+            borderRadius: '8.75px',
+            boxShadow: '0px 10px 15px rgba(0, 0, 0, 0.1), 0px 4px 6px rgba(0, 0, 0, 0.1)',
+            border: '1px solid rgba(0, 0, 0, 0.1)',
+            p: 0,
+            display: 'flex',
+            flexDirection: 'column'
+          }
+        }}
       >
-        <DialogTitle>
+        <DialogTitle sx={{ 
+          p: '24px 28px',
+          '& .MuiTypography-root': {
+            fontSize: '18px',
+            fontWeight: 600,
+            color: '#000000',
+            lineHeight: '0.984375em',
+          }
+        }}>
           Edit Product
           <IconButton
+            aria-label="close"
             onClick={handleCloseDialog}
-            sx={{ position: 'absolute', right: 8, top: 8 }}
+            sx={{
+              position: 'absolute',
+              right: 15,
+              top: 15,
+              width: '24px',
+              height: '24px',
+              color: '#000000',
+              p: 0
+            }}
           >
-            <CloseIcon />
+            <CloseIcon sx={{ width: '14px', height: '14px' }} />
           </IconButton>
         </DialogTitle>
-        <DialogContent>
-          {dialogState.productId && (
-            <Box sx={{ pt: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
+
+        <DialogContent sx={{ px: '28px', py: 0, overflow: 'visible', flex: 1 }}>
+          <Box component="form" onSubmit={(e) => { e.preventDefault(); handleSave(); }}>
+            <Box sx={{ mb: 3 }}>
+              <Typography sx={{
+                fontSize: '14px',
+                fontWeight: 500,
+                color: '#000000',
+                mb: '18px',
+                lineHeight: '1.0208333333333333em'
+              }}>
+                Product Name
+              </Typography>
               <TextField
                 name="name"
-                label="Name"
-                fullWidth
                 value={formData.name || ''}
                 onChange={handleInputChange}
-              />
-              <TextField
-                name="description"
-                label="Description"
+                placeholder="Product name"
                 fullWidth
-                multiline
-                rows={4}
-                value={formData.description || ''}
-                onChange={handleInputChange}
-              />
-              <TextField
-                name="price"
-                label="Price"
-                fullWidth
-                type="number"
-                value={formData.price || ''}
-                onChange={handleInputChange}
-              />
-              <TextField
-                name="stock"
-                label="Stock"
-                fullWidth
-                type="number"
-                value={formData.stock || ''}
-                onChange={handleInputChange}
+                InputProps={{
+                  sx: {
+                    backgroundColor: '#F3F3F5',
+                    borderRadius: '6.75px',
+                    height: '36px',
+                    border: 'none',
+                    fontSize: '14px',
+                    fontWeight: 400,
+                    color: '#000000',
+                    padding: '8px 11px',
+                    '& .MuiOutlinedInput-notchedOutline': {
+                      border: 'none'
+                    }
+                  }
+                }}
               />
             </Box>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleCloseDialog}>Cancel</Button>
-          <Button variant="contained" onClick={handleSave}>Save</Button>
-        </DialogActions>
-      </Dialog>
 
-      {/* Add Dialog */}
-      <Dialog 
-        open={dialogState.open && dialogState.type === 'add'} 
-        onClose={handleCloseDialog}
-        maxWidth="sm"
-        fullWidth
-      >
-        <DialogTitle>
-          Add New Product
-          <IconButton
-            onClick={handleCloseDialog}
-            sx={{ position: 'absolute', right: 8, top: 8 }}
-          >
-            <CloseIcon />
-          </IconButton>
-        </DialogTitle>
-        <DialogContent>
-          <Box sx={{ pt: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <TextField 
-              name="name"
-              label="Name" 
-              fullWidth 
-              value={formData.name || ''} 
-              onChange={handleInputChange}
-            />
-            <TextField 
-              name="description"
-              label="Description" 
-              fullWidth 
-              multiline 
-              rows={4} 
-              value={formData.description || ''} 
-              onChange={handleInputChange}
-            />
-            <TextField 
-              name="price"
-              label="Price" 
-              fullWidth 
-              type="number" 
-              value={formData.price || ''} 
-              onChange={handleInputChange}
-            />
-            <TextField 
-              name="stock"
-              label="Stock" 
-              fullWidth 
-              type="number" 
-              value={formData.stock || ''} 
-              onChange={handleInputChange}
-            />
+            <Box sx={{ mb: 2.5 }}>
+              <Typography sx={{
+                fontSize: '14px',
+                fontWeight: 500,
+                color: '#000000',
+                mb: '18px',
+                lineHeight: '1.0208333333333333em'
+              }}>
+                Description
+              </Typography>
+              <TextField
+                name="description"
+                value={formData.description || ''}
+                onChange={handleInputChange}
+                placeholder="Description"
+                multiline
+                rows={3}
+                fullWidth
+                InputProps={{
+                  sx: {
+                    backgroundColor: '#F3F3F5',
+                    borderRadius: '6.75px',
+                    border: 'none',
+                    fontSize: '14px',
+                    fontWeight: 400,
+                    color: '#000000',
+                    padding: '9px 13px',
+                    lineHeight: '1.4',
+                    '& .MuiOutlinedInput-notchedOutline': {
+                      border: 'none'
+                    }
+                  }
+                }}
+              />
+            </Box>
+
+            <Box sx={{ display: 'flex', gap: '14px' }}>
+              <Box sx={{ flex: 1 }}>
+                <Typography sx={{
+                  fontSize: '14px',
+                  fontWeight: 500,
+                  color: '#000000',
+                  mb: '18px',
+                  lineHeight: '1.0208333333333333em'
+                }}>
+                  Price ($)
+                </Typography>
+                <TextField
+                  name="price"
+                  type="number"
+                  value={formData.price || ''}
+                  onChange={handleInputChange}
+                  placeholder="0.00"
+                  fullWidth
+                  InputProps={{
+                    sx: {
+                      backgroundColor: '#F3F3F5',
+                      borderRadius: '6.75px',
+                      height: '36px',
+                      border: 'none',
+                      fontSize: '14px',
+                      fontWeight: 400,
+                      color: '#000000',
+                      padding: '8px 14px',
+                      '& .MuiOutlinedInput-notchedOutline': {
+                        border: 'none'
+                      }
+                    }
+                  }}
+                />
+              </Box>
+
+              <Box sx={{ flex: 1 }}>
+                <Typography sx={{
+                  fontSize: '14px',
+                  fontWeight: 500,
+                  color: '#000000',
+                  mb: '18px',
+                  lineHeight: '1.0208333333333333em'
+                }}>
+                  Stock
+                </Typography>
+                <TextField
+                  name="stock"
+                  type="number"
+                  value={formData.stock || ''}
+                  onChange={handleInputChange}
+                  placeholder="0"
+                  fullWidth
+                  InputProps={{
+                    sx: {
+                      backgroundColor: '#F3F3F5',
+                      borderRadius: '6.75px',
+                      height: '36px',
+                      border: 'none',
+                      fontSize: '14px',
+                      fontWeight: 400,
+                      color: '#000000',
+                      padding: '8px 11px',
+                      '& .MuiOutlinedInput-notchedOutline': {
+                        border: 'none'
+                      }
+                    }
+                  }}
+                />
+              </Box>
+            </Box>
           </Box>
         </DialogContent>
-        <DialogActions>
-          <Button onClick={handleCloseDialog}>Cancel</Button>
-          <Button variant="contained" onClick={handleSave}>Add</Button>
+
+        <DialogActions sx={{ p: '28px', gap: '12px' }}>
+          <Button 
+            onClick={handleCloseDialog}
+            sx={{
+              height: '32px',
+              minWidth: '68px',
+              borderRadius: '6.75px',
+              border: '1px solid rgba(0, 0, 0, 0.1)',
+              color: '#000000',
+              fontSize: '14px',
+              fontWeight: 500,
+              lineHeight: '1.4583333333333333em',
+              textTransform: 'none',
+              padding: '7px 14px',
+              '&:hover': {
+                borderColor: 'rgba(0, 0, 0, 0.1)',
+                backgroundColor: 'rgba(0, 0, 0, 0.05)'
+              }
+            }}
+          >
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleSave}
+            variant="contained"
+            sx={{
+              height: '32px',
+              minWidth: '113px',
+              borderRadius: '6.75px',
+              backgroundColor: '#030213',
+              color: '#FFFFFF',
+              fontSize: '14px',
+              fontWeight: 500,
+              lineHeight: '1.4583333333333333em',
+              textTransform: 'none',
+              padding: '7px 11px',
+              '&:hover': {
+                backgroundColor: '#1A1A1A'
+              }
+            }}
+          >
+            Update Product
+          </Button>
         </DialogActions>
       </Dialog>
 
-      {/* Delete Dialog */}
-      <Dialog 
-        open={dialogState.open && dialogState.type === 'delete'} 
-        onClose={handleCloseDialog}
-        maxWidth="sm"
-        fullWidth
+      {/* Cart display in bottom left corner */}
+      <Box
+        sx={{
+          position: 'fixed',
+          bottom: 16,
+          left: 16,
+          width: 300,
+          maxHeight: '60vh',
+          overflow: 'auto',
+          bgcolor: 'background.paper',
+          boxShadow: 3,
+          borderRadius: 2,
+          p: 2,
+          zIndex: 1000
+        }}
       >
-        <DialogTitle>
-          Delete Product
-          <IconButton
-            onClick={handleCloseDialog}
-            sx={{ position: 'absolute', right: 8, top: 8 }}
-          >
-            <CloseIcon />
-          </IconButton>
-        </DialogTitle>
-        <DialogContent>
-          <Typography sx={{ pt: 2 }}>
-            Are you sure you want to delete this product? This action cannot be undone.
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleCloseDialog}>Cancel</Button>
-          <Button variant="contained" color="error" onClick={handleConfirmDelete}>Delete</Button>
-        </DialogActions>
-      </Dialog>
+        <Typography variant="h6" sx={{ mb: 1 }}>Shopping Cart</Typography>
+        {cart && cart.items.length > 0 ? (
+          <>
+            {cart.items.map((item) => (
+              <Box
+                key={item.id}
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  mb: 1,
+                  pb: 1,
+                  borderBottom: '1px solid',
+                  borderColor: 'divider'
+                }}
+              >
+                <Box>
+                  <Typography variant="body2">{item.product.name}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Quantity: {item.quantity}
+                  </Typography>
+                </Box>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Typography variant="body2">${(item.product.price * item.quantity).toFixed(2)}</Typography>
+                  <IconButton
+                    size="small"
+                    color="error"
+                    onClick={() => removeFromCart(item.id)}
+                  >
+                    <DeleteIcon fontSize="small" />
+                  </IconButton>
+                </Box>
+              </Box>
+            ))}
+            <Box sx={{ mt: 2, pt: 2, borderTop: '1px solid', borderColor: 'divider' }}>
+              <Typography variant="subtitle2">
+                Total: ${cart.items.reduce((sum, item) => sum + (item.product.price * item.quantity), 0).toFixed(2)}
+              </Typography>
+            </Box>
+          </>
+        ) : (
+          <Typography variant="body2" color="text.secondary">Cart is empty</Typography>
+        )}
+      </Box>
     </Box>
   );
-};
+}
 
 export default ProductList;
